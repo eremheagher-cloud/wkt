@@ -1,0 +1,460 @@
+name: PC criado pelo @alves7.pcm — Windows 11 26H2
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_number:
+        description: 'Instance Number (1-10)'
+        required: true
+        default: '1'
+        type: string
+
+jobs:
+  deploy-rdp:
+
+    # A máquina registrada como self-hosted precisa
+    # estar realmente executando Windows 11 26H2.
+    #
+    # Labels do runner:
+    # self-hosted
+    # windows
+    # 26H2
+
+    runs-on: [self-hosted, windows, 26H2]
+
+    timeout-minutes: 360
+
+    steps:
+
+    - name: System Information
+      shell: powershell
+      run: |
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " WINDOWS 11 26H2 - DEPLOYMENT" -ForegroundColor Green
+        Write-Host " Criado pelo @alves7.pcm" -ForegroundColor Yellow
+        Write-Host "========================================" -ForegroundColor Green
+
+        Write-Host ""
+        Write-Host "Instance Number: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
+        Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Yellow
+        Write-Host "Workflow: $env:GITHUB_WORKFLOW" -ForegroundColor Yellow
+
+        Write-Host ""
+        Write-Host "=== SYSTEM SPECIFICATIONS ===" -ForegroundColor Cyan
+
+        Get-ComputerInfo |
+          Select-Object WindowsProductName,
+                        WindowsVersion,
+                        OsBuildNumber,
+                        TotalPhysicalMemory
+
+        Get-CimInstance Win32_Processor |
+          Select-Object Name,
+                        NumberOfCores,
+                        NumberOfLogicalProcessors
+
+    - name: Verify Windows 11 26H2
+      shell: powershell
+      run: |
+        Write-Host "Verificando o Windows REAL do runner..." -ForegroundColor Cyan
+
+        $info = Get-ComputerInfo
+
+        $product = $info.WindowsProductName
+        $version = $info.WindowsVersion
+        $build = [int]$info.OsBuildNumber
+
+        Write-Host ""
+        Write-Host "Windows : $product" -ForegroundColor White
+        Write-Host "Version : $version" -ForegroundColor White
+        Write-Host "Build   : $build" -ForegroundColor White
+        Write-Host ""
+
+        if ($product -notlike "*Windows 11*") {
+            Write-Host "ERRO: O runner não está executando Windows 11." -ForegroundColor Red
+            exit 1
+        }
+
+        if ($build -ne 26300) {
+            Write-Host "ERRO: Windows 11 26H2 não confirmado." -ForegroundColor Red
+            Write-Host "Build esperado: 26300" -ForegroundColor Yellow
+            Write-Host "Build encontrado: $build" -ForegroundColor Yellow
+            exit 1
+        }
+
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " WINDOWS 11 26H2 CONFIRMADO" -ForegroundColor Green
+        Write-Host " BUILD 26300 CONFIRMADO" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+
+    - name: Enable RDP
+      shell: powershell
+      run: |
+        Write-Host "Enabling Remote Desktop..." -ForegroundColor Green
+
+        Set-ItemProperty `
+          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          -Name "fDenyTSConnections" `
+          -Value 0
+
+        Enable-NetFirewallRule `
+          -DisplayGroup "Remote Desktop"
+
+        Set-ItemProperty `
+          -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+          -Name "UserAuthentication" `
+          -Value 1
+
+    - name: Create User Account
+      shell: powershell
+      run: |
+        Write-Host "Setting up user account..." -ForegroundColor Green
+
+        $Password = ConvertTo-SecureString `
+          "P@ssw0rd!" `
+          -AsPlainText `
+          -Force
+
+        if (Get-LocalUser -Name "Rafael" -ErrorAction SilentlyContinue) {
+
+          Set-LocalUser `
+            -Name "Rafael" `
+            -Password $Password
+
+        } else {
+
+          New-LocalUser `
+            -Name "Rafael" `
+            -Password $Password `
+            -FullName "Rafael"
+
+        }
+
+        Add-LocalGroupMember `
+          -Group "Administrators" `
+          -Member "Rafael" `
+          -ErrorAction SilentlyContinue
+
+        Add-LocalGroupMember `
+          -Group "Remote Desktop Users" `
+          -Member "Rafael" `
+          -ErrorAction SilentlyContinue
+
+        Write-Host "Username: Rafael" -ForegroundColor Yellow
+        Write-Host "Rafael is an Administrator." -ForegroundColor Green
+
+    - name: Fix Windows Audio
+      shell: powershell
+      run: |
+        Write-Host "Configuring Windows Audio..." -ForegroundColor Green
+
+        $audioServices = @(
+          "Audiosrv",
+          "AudioEndpointBuilder"
+        )
+
+        foreach ($service in $audioServices) {
+
+          try {
+
+            Set-Service `
+              -Name $service `
+              -StartupType Automatic `
+              -ErrorAction Stop
+
+            Start-Service `
+              -Name $service `
+              -ErrorAction Stop
+
+            Write-Host "$service started successfully." -ForegroundColor Green
+
+          }
+          catch {
+
+            Write-Host `
+              "Could not start $service : $($_.Exception.Message)" `
+              -ForegroundColor Yellow
+          }
+        }
+
+        Write-Host ""
+        Write-Host "=== AUDIO SERVICES STATUS ===" -ForegroundColor Cyan
+
+        Get-Service `
+          -Name "Audiosrv","AudioEndpointBuilder" |
+          Select-Object Name, Status, StartType
+
+    - name: Configure Network
+      shell: powershell
+      run: |
+        Write-Host "Configuring network adapters..." -ForegroundColor Green
+
+        $networkServices = @(
+          "Dhcp",
+          "Dnscache",
+          "NlaSvc",
+          "netprofm",
+          "WlanSvc"
+        )
+
+        foreach ($service in $networkServices) {
+
+          try {
+
+            Set-Service `
+              -Name $service `
+              -StartupType Automatic `
+              -ErrorAction SilentlyContinue
+
+            Start-Service `
+              -Name $service `
+              -ErrorAction SilentlyContinue
+
+          }
+          catch {
+
+            Write-Host `
+              "Network service $service could not be started." `
+              -ForegroundColor Yellow
+          }
+        }
+
+        Write-Host ""
+        Write-Host "=== NETWORK ADAPTERS ===" -ForegroundColor Cyan
+
+        $adapters = Get-NetAdapter -ErrorAction SilentlyContinue
+
+        foreach ($adapter in $adapters) {
+
+          Write-Host `
+            "Adapter: $($adapter.Name) | Status: $($adapter.Status) | Type: $($adapter.InterfaceDescription)" `
+            -ForegroundColor White
+
+          if ($adapter.Status -eq "Disabled") {
+
+            try {
+
+              Enable-NetAdapter `
+                -Name $adapter.Name `
+                -Confirm:$false `
+                -ErrorAction Stop
+
+              Write-Host `
+                "Enabled: $($adapter.Name)" `
+                -ForegroundColor Green
+
+            }
+            catch {
+
+              Write-Host `
+                "Could not enable: $($adapter.Name)" `
+                -ForegroundColor Yellow
+            }
+          }
+        }
+
+        Write-Host ""
+        Write-Host "=== NETWORK CONNECTIONS ===" -ForegroundColor Cyan
+
+        Get-NetAdapter |
+          Select-Object Name,
+                        InterfaceDescription,
+                        Status,
+                        LinkSpeed
+
+    - name: Install Tailscale
+      shell: powershell
+      run: |
+        Write-Host "Downloading Tailscale..." -ForegroundColor Green
+
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+
+        $installerPath = "$env:TEMP\tailscale.msi"
+
+        Invoke-WebRequest `
+          -Uri $tsUrl `
+          -OutFile $installerPath
+
+        Write-Host "Installing Tailscale..." -ForegroundColor Green
+
+        Start-Process `
+          msiexec.exe `
+          -ArgumentList "/i `"$installerPath`" /quiet /norestart" `
+          -Wait
+
+        Remove-Item `
+          $installerPath `
+          -Force `
+          -ErrorAction SilentlyContinue
+
+        Write-Host "Tailscale installed successfully!" -ForegroundColor Green
+
+    - name: Start Tailscale
+      shell: powershell
+      run: |
+        Write-Host "Starting Tailscale..." -ForegroundColor Green
+
+        & "C:\Program Files\Tailscale\tailscale.exe" `
+          up `
+          --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}" `
+          --hostname "enigmano-${{ github.run_id }}"
+
+        Start-Sleep -Seconds 15
+
+    - name: Get Tailscale IP
+      shell: powershell
+      run: |
+        $tsIP = & `
+          "C:\Program Files\Tailscale\tailscale.exe" `
+          ip -4
+
+        Write-Host "Tailscale IP: $tsIP" -ForegroundColor Green
+
+        "TAILSCALE_IP=$tsIP" |
+          Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append
+
+    - name: Install Google Chrome
+      shell: powershell
+      run: |
+        Write-Host "Downloading Google Chrome..." -ForegroundColor Green
+
+        $chromeUrl = "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
+
+        $installerPath = "$env:TEMP\chrome_installer.exe"
+
+        Invoke-WebRequest `
+          -Uri $chromeUrl `
+          -OutFile $installerPath
+
+        Write-Host "Installing Google Chrome..." -ForegroundColor Green
+
+        Start-Process `
+          -FilePath $installerPath `
+          -ArgumentList "/silent /install" `
+          -Wait
+
+        Remove-Item `
+          $installerPath `
+          -Force `
+          -ErrorAction SilentlyContinue
+
+        Write-Host "Google Chrome installed!" -ForegroundColor Green
+
+    - name: Install 7-Zip
+      shell: powershell
+      run: |
+        Write-Host "Downloading 7-Zip..." -ForegroundColor Green
+
+        $zipUrl = "https://www.7-zip.org/a/7z2409-x64.exe"
+
+        $installerPath = "$env:TEMP\7z-installer.exe"
+
+        Invoke-WebRequest `
+          -Uri $zipUrl `
+          -OutFile $installerPath
+
+        Write-Host "Installing 7-Zip..." -ForegroundColor Green
+
+        Start-Process `
+          -FilePath $installerPath `
+          -ArgumentList "/S" `
+          -Wait
+
+        Remove-Item `
+          $installerPath `
+          -Force `
+          -ErrorAction SilentlyContinue
+
+        Write-Host "7-Zip installed!" -ForegroundColor Green
+
+    - name: Connection Details
+      shell: powershell
+      run: |
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "       ENIGMANO RDP ACCESS" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Green
+
+        Write-Host ""
+        Write-Host "Host: $env:TAILSCALE_IP" -ForegroundColor White
+        Write-Host "Username: Rafael" -ForegroundColor White
+        Write-Host "Password: P@ssw0rd!" -ForegroundColor White
+        Write-Host "Account: Administrator" -ForegroundColor White
+
+        Write-Host ""
+        Write-Host "Windows: Windows 11 26H2" -ForegroundColor Green
+        Write-Host "Build: 26300" -ForegroundColor Green
+
+        Write-Host ""
+        Write-Host "Connection Instructions:" -ForegroundColor Yellow
+        Write-Host "1. Install Tailscale on your device"
+        Write-Host "2. Log in with the same Tailscale account"
+        Write-Host "3. Open Remote Desktop"
+        Write-Host "4. Enter the Tailscale IP"
+        Write-Host "5. Use the configured credentials"
+
+    - name: Keep Session Alive
+      shell: powershell
+      run: |
+        Write-Host ""
+        Write-Host "=== SESSION ACTIVE ===" -ForegroundColor Green
+
+        Write-Host `
+          "EnigMano RDP instance is now running!" `
+          -ForegroundColor Cyan
+
+        Write-Host `
+          "Instance will remain active for up to 6 hours." `
+          -ForegroundColor Yellow
+
+        $counter = 0
+
+        while ($true) {
+
+          $counter++
+
+          Write-Host `
+            "Session active - Heartbeat #$counter ($(Get-Date))" `
+            -ForegroundColor Green
+
+          $tsStatus = & `
+            "C:\Program Files\Tailscale\tailscale.exe" `
+            status
+
+          if ($tsStatus -match "active") {
+
+            Write-Host `
+              "Tailscale status: ACTIVE" `
+              -ForegroundColor Green
+
+          } else {
+
+            Write-Host `
+              "Tailscale status: ERROR - Restarting..." `
+              -ForegroundColor Red
+
+            & `
+              "C:\Program Files\Tailscale\tailscale.exe" `
+              up `
+              --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}" `
+              --hostname "enigmano-${{ github.run_id }}"
+          }
+
+          try {
+
+            Start-Service `
+              -Name "Audiosrv" `
+              -ErrorAction SilentlyContinue
+
+            Start-Service `
+              -Name "AudioEndpointBuilder" `
+              -ErrorAction SilentlyContinue
+
+          }
+          catch {
+          }
+
+          Start-Sleep -Seconds 60
+        }
